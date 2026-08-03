@@ -7,25 +7,140 @@
 <style>
   html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}
   iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
-  #m{color:#bbb;font-family:sans-serif;font-size:15px;text-align:center;padding:24px}
+  #m{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;
+     justify-content:center;gap:14px;padding:24px;box-sizing:border-box;
+     color:#EDE6D3;font-family:Tajawal,sans-serif;font-size:15px;text-align:center;line-height:1.7}
+  #m.on{display:flex}
+  .row{display:flex;flex-direction:row-reverse;gap:10px;flex-wrap:wrap;justify-content:center}
+  a.btn,button.btn{
+    appearance:none;cursor:pointer;font-family:inherit;font-size:13.5px;
+    padding:9px 18px;border-radius:10px;text-decoration:none;
+    border:1px solid rgba(232,206,147,.55);background:transparent;color:#E8CE93}
+  a.btn.p{background:#E8CE93;border-color:#E8CE93;color:#0B3B32}
 </style>
 </head>
 <body>
-<div id="m"></div>
+<div id="m">
+  <div id="msg">تعذّر تشغيل البث داخل التطبيق.</div>
+  <div class="row">
+    <button class="btn" id="retry" type="button">إعادة المحاولة</button>
+    <a class="btn p" id="yt" href="#" target="_blank" rel="noopener">افتح في يوتيوب</a>
+  </div>
+</div>
 <script>
 (function () {
   // صفحة مشغّل تُستضاف على دومين https حقيقي ويحمّلها التطبيق (WebView)،
   // فيصبح referrer/origin سليماً ويشتغل بث الحرمين زي الويب تماماً.
+  //
+  // ليه الـIFrame API بدل iframe ساكت: يوتيوب بيرفض أحياناً تشغيل البث الحيّ
+  // جوّه الـembed (أخطاء 101/150/153) فيفضل مربع أسود بلا أي إشارة. هنا بنسمع
+  // onError، نجرّب youtube-nocookie كبديل، وبعدين نعرض مخرج واضح للمستخدم
+  // ونبلّغ التطبيق بالرسالة عشان يقدر يعرض واجهته الاحتياطية.
   var v = (new URLSearchParams(location.search)).get('v') || '';
+  var box = document.getElementById('m');
+  var msg = document.getElementById('msg');
+
   if (!/^[A-Za-z0-9_-]{11}$/.test(v)) {
-    document.getElementById('m').textContent = 'معرّف فيديو غير صالح';
+    msg.textContent = 'معرّف فيديو غير صالح';
+    box.classList.add('on');
     return;
   }
-  var f = document.createElement('iframe');
-  f.src = 'https://www.youtube.com/embed/' + v + '?autoplay=1&playsinline=1&rel=0';
-  f.allow = 'autoplay; encrypted-media; picture-in-picture; fullscreen';
-  f.setAttribute('allowfullscreen', '');
-  document.body.appendChild(f);
+
+  var watchUrl = 'https://www.youtube.com/watch?v=' + v;
+  document.getElementById('yt').href = watchUrl;
+
+  function tellApp(kind, detail) {
+    try {
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(
+          JSON.stringify({ source: 'yaqeen-live', kind: kind, detail: detail || null, videoId: v })
+        );
+      }
+    } catch (e) {}
+  }
+
+  var player = null;
+  var host = 'https://www.youtube.com';   // البديل: youtube-nocookie.com
+  var triedNoCookie = false;
+  var ready = false;
+  var guard = null;
+
+  function arm() {
+    clearTimeout(guard);
+    // لو المشغّل ما وصلش للفيديو خلال المهلة اعتبره فشل (يمنع المربع الأسود الأبدي)
+    guard = setTimeout(function () { if (!ready) fail('timeout'); }, 15000);
+  }
+
+  function fail(reason) {
+    clearTimeout(guard);
+    // محاولة أخيرة على دومين no-cookie قبل الاستسلام
+    if (!triedNoCookie) {
+      triedNoCookie = true;
+      host = 'https://www.youtube-nocookie.com';
+      build();
+      return;
+    }
+    msg.textContent = 'تعذّر تشغيل البث داخل التطبيق.';
+    box.classList.add('on');
+    tellApp('error', String(reason));
+  }
+
+  function build() {
+    var old = document.getElementById('pl');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var d = document.createElement('div');
+    d.id = 'pl';
+    document.body.appendChild(d);
+
+    ready = false;
+    arm();
+
+    player = new YT.Player('pl', {
+      host: host,
+      videoId: v,
+      playerVars: {
+        autoplay: 1, playsinline: 1, rel: 0,
+        origin: location.origin, widget_referrer: location.origin
+      },
+      events: {
+        onReady: function (e) { try { e.target.playVideo(); } catch (x) {} },
+        onStateChange: function (e) {
+          // BUFFERING أو PLAYING = المشغّل وصل للفيديو فعلاً
+          if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.BUFFERING) {
+            if (!ready) {
+              ready = true;
+              clearTimeout(guard);
+              box.classList.remove('on');
+              tellApp('playing');
+            }
+          }
+        },
+        onError: function (e) { fail('yt_' + e.data); }
+      }
+    });
+  }
+
+  document.getElementById('retry').addEventListener('click', function () {
+    box.classList.remove('on');
+    triedNoCookie = false;
+    host = 'https://www.youtube.com';
+    build();
+  });
+
+  // الرابط الاحتياطي: نبلّغ التطبيق ليفتحه بتطبيق يوتيوب بدل WebView بلا شريط عنوان
+  document.getElementById('yt').addEventListener('click', function (ev) {
+    if (window.ReactNativeWebView) {
+      ev.preventDefault();
+      tellApp('open_youtube', watchUrl);
+    }
+  });
+
+  window.onYouTubeIframeAPIReady = build;
+
+  var s = document.createElement('script');
+  s.src = 'https://www.youtube.com/iframe_api';
+  s.onerror = function () { fail('api_load'); };
+  document.head.appendChild(s);
 })();
 </script>
 </body>
