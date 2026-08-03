@@ -17,9 +17,14 @@
     padding:9px 18px;border-radius:10px;text-decoration:none;
     border:1px solid rgba(232,206,147,.55);background:transparent;color:#E8CE93}
   a.btn.p{background:#E8CE93;border-color:#E8CE93;color:#0B3B32}
+  #unmute{display:none;position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+    z-index:5;cursor:pointer;font-family:Tajawal,sans-serif;font-size:13.5px;
+    padding:9px 18px;border-radius:999px;background:rgba(11,59,50,.92);
+    border:1px solid #E8CE93;color:#E8CE93}
 </style>
 </head>
 <body>
+<button id="unmute" type="button">🔊 اضغط لتشغيل الصوت</button>
 <div id="m">
   <div id="msg">تعذّر تشغيل البث داخل التطبيق.</div>
   <div class="row">
@@ -48,6 +53,16 @@
 
   var watchUrl = 'https://www.youtube.com/watch?v=' + v;
   document.getElementById('yt').href = watchUrl;
+
+  // زر الصوت — يبان بس لو الأوتوبلاي اتفرض عليه الكتم
+  function showUnmute(p) {
+    var b = document.getElementById('unmute');
+    b.style.display = 'block';
+    b.onclick = function () {
+      try { p.unMute(); p.setVolume(100); p.playVideo(); } catch (x) {}
+      b.style.display = 'none';
+    };
+  }
 
   function tellApp(kind, detail) {
     try {
@@ -103,7 +118,22 @@
         origin: location.origin, widget_referrer: location.origin
       },
       events: {
-        onReady: function (e) { try { e.target.playVideo(); } catch (x) {} },
+        onReady: function (e) {
+          // تشغيل تلقائي بصوت. لو المنصة رفضت (سياسة الأوتوبلاي) نكتم ونعيد
+          // — فيدخل البث لوحده وزر الصوت يبان بدل ما تفضل الشاشة واقفة.
+          try {
+            e.target.playVideo();
+            setTimeout(function () {
+              if (!ready) {
+                try {
+                  e.target.mute();
+                  e.target.playVideo();
+                  showUnmute(e.target);
+                } catch (x) {}
+              }
+            }, 2500);
+          } catch (x) {}
+        },
         onStateChange: function (e) {
           // BUFFERING أو PLAYING = المشغّل وصل للفيديو فعلاً
           if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.BUFFERING) {
@@ -122,6 +152,7 @@
 
   document.getElementById('retry').addEventListener('click', function () {
     box.classList.remove('on');
+    document.getElementById('unmute').style.display = 'none';
     triedNoCookie = false;
     host = 'https://www.youtube.com';
     build();
