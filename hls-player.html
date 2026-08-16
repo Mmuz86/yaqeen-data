@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>بث مباشر — المصدر الرسمي</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}
+  video{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;background:#000}
+  #m{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;
+     justify-content:center;gap:14px;padding:24px;box-sizing:border-box;
+     color:#EDE6D3;font-family:Tajawal,sans-serif;font-size:15px;text-align:center;line-height:1.7}
+  #m.on{display:flex}
+  .row{display:flex;flex-direction:row-reverse;gap:10px;flex-wrap:wrap;justify-content:center}
+  button.btn{
+    appearance:none;cursor:pointer;font-family:inherit;font-size:13.5px;
+    padding:9px 18px;border-radius:10px;
+    border:1px solid rgba(232,206,147,.55);background:transparent;color:#E8CE93}
+  button.btn.p{background:#E8CE93;border-color:#E8CE93;color:#0B3B32}
+  #unmute{display:none;position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+    z-index:5;cursor:pointer;font-family:Tajawal,sans-serif;font-size:13.5px;
+    padding:9px 18px;border-radius:999px;background:rgba(11,59,50,.92);
+    border:1px solid #E8CE93;color:#E8CE93}
+  #src{position:absolute;top:10px;right:10px;z-index:4;font-family:Tajawal,sans-serif;
+    font-size:11px;color:rgba(237,230,211,.72);background:rgba(0,0,0,.42);
+    padding:3px 9px;border-radius:999px;pointer-events:none}
+</style>
+</head>
+<body>
+<video id="v" playsinline webkit-playsinline preload="auto"></video>
+<div id="src">المصدر الرسمي</div>
+<button id="unmute" type="button">🔊 اضغط لتشغيل الصوت</button>
+<div id="m">
+  <div id="msg">تعذّر تشغيل البث الآن.</div>
+  <div class="row">
+    <button class="btn p" id="retry" type="button">إعادة المحاولة</button>
+  </div>
+</div>
+<script src="hls.min.js"></script>
+<script>
+(function () {
+  // ═══ مشغّل HLS للمصدر الرسمي (الهيئة السعودية للإعلام) ═══
+  //
+  // ليه موجود: بث الحرمين على يوتيوب بيقع من وقت للتاني — القناة بتوقف البث
+  // فيرجع حلّ معرّف الفيديو فاضياً (بلاغا 08-15 و08-16 لمكة). المصدر ده مستقل
+  // تماماً عن يوتيوب: بلا أخطاء 101/150/153، بلا إعلانات، وبلا اعتماد على
+  // استمرار قناة على منصة تانية.
+  //
+  // ⛔ الصفحة لا تقبل رابط بث من الـURL إطلاقاً — بارامتر `c` مفتاح من قائمة
+  // مقفولة تحت. لو قبلنا رابطاً خام، أي حد يقدر يخلّي التطبيق يشغّل أي فيديو
+  // من أي دومين جوّه إطار بيبان كأنه من يقين.
+  var SOURCES = {
+    quran:  'https://win.holol.com/live/quran/playlist.m3u8',   // المسجد الحرام
+    sunnah: 'https://win.holol.com/live/sunnah/playlist.m3u8'   // المسجد النبوي
+  };
+
+  var key = (new URLSearchParams(location.search)).get('c') || '';
+  var url = Object.prototype.hasOwnProperty.call(SOURCES, key) ? SOURCES[key] : null;
+
+  var v = document.getElementById('v');
+  var box = document.getElementById('m');
+  var msg = document.getElementById('msg');
+  var unmuteBtn = document.getElementById('unmute');
+
+  if (!url) {
+    msg.textContent = 'مصدر بث غير معروف';
+    box.classList.add('on');
+    return;
+  }
+
+  function tellApp(kind, detail) {
+    try {
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(
+          JSON.stringify({ source: 'yaqeen-live', kind: kind, detail: detail || null, channel: key })
+        );
+      }
+      // على الويب الصفحة بتتحمّل في iframe — نبلّغ الحاضن بنفس البروتوكول
+      if (window.parent && window.parent !== window) {
+        window.parent.postMessage(
+          JSON.stringify({ source: 'yaqeen-live', kind: kind, detail: detail || null, channel: key }), '*'
+        );
+      }
+    } catch (e) {}
+  }
+
+  var hls = null;
+  var ready = false;
+  var guard = null;
+
+  function arm() {
+    clearTimeout(guard);
+    // نفس مهلة مشغّل يوتيوب: لو ما بدأش خلال ١٥ث اعتبره فشل بدل مربع أسود أبدي
+    guard = setTimeout(function () { if (!ready) fail('timeout'); }, 15000);
+  }
+
+  function fail(reason) {
+    clearTimeout(guard);
+    if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+    msg.textContent = 'تعذّر تشغيل البث الآن.';
+    box.classList.add('on');
+    tellApp('error', String(reason));
+  }
+
+  function markPlaying() {
+    if (ready) return;
+    ready = true;
+    clearTimeout(guard);
+    box.classList.remove('on');
+    tellApp('playing');
+  }
+
+  /**
+   * التشغيل التلقائي: نجرّب بصوت الأول (الموبايل بيسمح جوّه WebView)، ولو
+   * المنصة رفضت — والمتصفحات كلها بترفض الصوت التلقائي على الويب — نكتم
+   * ونعيد المحاولة ونظهر زر فكّ الكتم. نفس سلوك مشغّل يوتيوب بالظبط.
+   */
+  function play() {
+    v.muted = false;
+    var p = v.play();
+    if (p && p.catch) {
+      p.catch(function () {
+        v.muted = true;
+        unmuteBtn.style.display = 'block';
+        var p2 = v.play();
+        if (p2 && p2.catch) p2.catch(function (e) { fail('autoplay_' + (e && e.name)); });
+      });
+    }
+  }
+
+  unmuteBtn.onclick = function () {
+    v.muted = false;
+    v.play().catch(function () {});
+    unmuteBtn.style.display = 'none';
+  };
+
+  v.addEventListener('playing', markPlaying);
+  v.addEventListener('loadeddata', function () { if (v.readyState >= 2) markPlaying(); });
+
+  function start() {
+    ready = false;
+    box.classList.remove('on');
+    unmuteBtn.style.display = 'none';
+    arm();
+
+    // سفاري/iOS بيشغّل HLS أصلاً بلا مكتبة — أخفّ وأدقّ من MSE
+    if (v.canPlayType('application/vnd.apple.mpegurl')) {
+      v.src = url;
+      v.addEventListener('error', function () { fail('native_video'); }, { once: true });
+      play();
+      return;
+    }
+
+    if (!window.Hls || !window.Hls.isSupported()) { fail('no_mse'); return; }
+
+    if (hls) { try { hls.destroy(); } catch (e) {} }
+    hls = new window.Hls({
+      // بث حيّ: نلحق بالحافة بدل ما نتأخّر دقيقة ورا الواقع
+      liveSyncDurationCount: 3,
+      manifestLoadingTimeOut: 12000,
+      manifestLoadingMaxRetry: 3,
+      fragLoadingTimeOut: 20000
+    });
+    hls.on(window.Hls.Events.MANIFEST_PARSED, play);
+    hls.on(window.Hls.Events.ERROR, function (_e, data) {
+      if (!data || !data.fatal) return;
+      // الأخطاء القاتلة القابلة للتعافي: الشبكة والوسائط. غيرها = استسلام
+      if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) { try { hls.startLoad(); return; } catch (x) {} }
+      else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) { try { hls.recoverMediaError(); return; } catch (x) {} }
+      fail('hls_' + (data.details || data.type));
+    });
+    hls.loadSource(url);
+    hls.attachMedia(v);
+  }
+
+  document.getElementById('retry').addEventListener('click', start);
+  start();
+})();
+</script>
+</body>
+</html>
