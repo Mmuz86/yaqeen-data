@@ -1,0 +1,65 @@
+# مراقب يقين من خارج السيرفر.
+#
+# ليه موجود: كل حرّاس يقين (sentinel, api_watch, healer, responder) بيشتغلوا
+# **جوّه** السيرفر. لو الصندوق نفسه طفي — عطل مزوّد، كيرنل، شبكة — الحرّاس
+# بيموتوا معاه ومحدّش بيعرف. الفحص ده بيجري على بنية جيت هَب، مستقلة تماماً
+# عن 187.127.109.222، فهو الوحيد اللي بيشوف السقوط الكامل.
+#
+# القناة: لو الفحص فشل، الـrun بيفشل وجيت هَب بيبعت إيميل لصاحب المستودع
+# تلقائياً. مش واتساب (ممنوع)، ومش اللوحة (لأنها بتكون واقعة هي كمان ساعتها).
+#
+# ليه هنا في yaqeen-data وليس مستودع مخصّص: جيت هَب بيوقف الجداول الدورية بعد
+# ٦٠ يوم خمول للمستودع. المستودع ده بيتحدّث باستمرار (فتاوى/إصدارات) فالجدول
+# بيفضل حيّ. مستودع مخصّص كان هيموت بالصمت بعد شهرين.
+name: uptime
+
+on:
+  schedule:
+    # كل ٥ دقائق. جيت هَب بيأخّر أحياناً دقائق تحت الضغط — ده شبكة أمان مش
+    # المراقب الأساسي، فالتأخير مقبول.
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    steps:
+      - name: فحص الواجهات الثلاث
+        run: |
+          set -u
+          fail=0
+
+          # ٣ محاولات بينها ١٥ ثانية. السبب: تعافي nginx من قتل مفاجئ بياخد
+          # ~٢ ثانية، وإعادة تشغيل الباك إند غير مرئية أصلاً. محاولة واحدة كانت
+          # هتقلب كل نبضة صيانة لإنذار كاذب.
+          check() {
+            name="$1"; url="$2"; min="$3"
+            code=000; size=0
+            for i in 1 2 3; do
+              code=$(curl -sS -o /tmp/probe_body -w '%{http_code}' -m 20 "$url" 2>/dev/null || echo 000)
+              size=$(wc -c < /tmp/probe_body 2>/dev/null || echo 0)
+              if [ "$code" = "200" ] && [ "$size" -ge "$min" ]; then
+                echo "✅ $name — $code، ${size} بايت (محاولة $i)"
+                return 0
+              fi
+              echo "… $name محاولة $i: كود=$code حجم=$size"
+              [ "$i" -lt 3 ] && sleep 15
+            done
+            echo "::error title=$name ساقط::آخر كود=$code حجم=$size — $url"
+            return 1
+          }
+
+          # الحد الأدنى للحجم مقصود: ٢٠٠ بصفحة فاضية = سقوط متنكّر.
+          check "الموقع getyaqeen.com"     "https://getyaqeen.com/"            20000 || fail=1
+          check "التطبيق app.getyaqeen.com" "https://app.getyaqeen.com/"        20000 || fail=1
+          check "الـAPI api.getyaqeen.com"  "https://api.getyaqeen.com/quiz/daily"  10 || fail=1
+
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::يقين ساقط من خارج السيرفر — راجع اللوج فوق"
+            exit 1
+          fi
+          echo "كل الواجهات سليمة."
