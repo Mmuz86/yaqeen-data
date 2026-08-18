@@ -11,27 +11,37 @@
 # ليه هنا في yaqeen-data وليس مستودع مخصّص: جيت هَب بيوقف الجداول الدورية بعد
 # ٦٠ يوم خمول للمستودع. المستودع ده بيتحدّث باستمرار (فتاوى/إصدارات) فالجدول
 # بيفضل حيّ. مستودع مخصّص كان هيموت بالصمت بعد شهرين.
+#
+# ⚠️ درس 2026-08-18: جدول جيت هَب مش موثوق للتردّد العالي. المقاس الفعلي على
+# المستودع ده: cron '*/5' اتنفّذ كل ٢٣–٣٥ دقيقة، وفي فجوة وصلت ٨٠ دقيقة بلا
+# أي تشغيلة. الحل: كل تشغيلة بقت **حلقة فحص طويلة** (نبضة كل ٥ دقايق لمدة
+# ٥٥ دقيقة) بدل نبضة واحدة — فحتى لو جيت هَب أطلقها مرة كل ساعة، التغطية
+# بتفضل كل ٥ دقايق تقريباً بلا انقطاع. الجدول بقى «إشعال» مش «إيقاع».
 name: uptime
 
 on:
   schedule:
-    # كل ٥ دقائق. جيت هَب بيأخّر أحياناً دقائق تحت الضغط — ده شبكة أمان مش
-    # المراقب الأساسي، فالتأخير مقبول.
     - cron: '*/5 * * * *'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# تشغيلة جديدة تلغي القديمة: مانبقاش حلقتين بيلفّوا مع بعض، والأحدث دايماً
+# هي الحيّة (عشان عمر آخر تشغيلة يفضل مؤشّر صادق لحارس المراقب).
+concurrency:
+  group: uptime-probe
+  cancel-in-progress: true
+
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    # ٥٥ دقيقة حلقة + هامش.
+    timeout-minutes: 60
     steps:
-      - name: فحص الواجهات الثلاث
+      - name: حلقة فحص الواجهات الثلاث
         run: |
           set -u
-          fail=0
 
           # ٣ محاولات بينها ١٥ ثانية. السبب: تعافي nginx من قتل مفاجئ بياخد
           # ~٢ ثانية، وإعادة تشغيل الباك إند غير مرئية أصلاً. محاولة واحدة كانت
@@ -53,13 +63,26 @@ jobs:
             return 1
           }
 
-          # الحد الأدنى للحجم مقصود: ٢٠٠ بصفحة فاضية = سقوط متنكّر.
-          check "الموقع getyaqeen.com"     "https://getyaqeen.com/"            20000 || fail=1
-          check "التطبيق app.getyaqeen.com" "https://app.getyaqeen.com/"        20000 || fail=1
-          check "الـAPI api.getyaqeen.com"  "https://api.getyaqeen.com/quiz/daily"  10 || fail=1
+          round() {
+            fail=0
+            # الحد الأدنى للحجم مقصود: ٢٠٠ بصفحة فاضية = سقوط متنكّر.
+            check "الموقع getyaqeen.com"      "https://getyaqeen.com/"               20000 || fail=1
+            check "التطبيق app.getyaqeen.com" "https://app.getyaqeen.com/"           20000 || fail=1
+            check "الـAPI api.getyaqeen.com"  "https://api.getyaqeen.com/quiz/daily"    10 || fail=1
+            return $fail
+          }
 
-          if [ "$fail" -ne 0 ]; then
-            echo "::error::يقين ساقط من خارج السيرفر — راجع اللوج فوق"
-            exit 1
-          fi
-          echo "كل الواجهات سليمة."
+          # ١٢ نبضة × ٥ دقايق = ٥٥ دقيقة تغطية من تشغيلة واحدة.
+          ROUNDS=12
+          GAP=300
+          n=1
+          while [ "$n" -le "$ROUNDS" ]; do
+            echo "──── نبضة $n/$ROUNDS — $(date -u '+%H:%M:%S UTC')"
+            if ! round; then
+              echo "::error::يقين ساقط من خارج السيرفر (نبضة $n) — راجع اللوج فوق"
+              exit 1
+            fi
+            n=$((n + 1))
+            [ "$n" -le "$ROUNDS" ] && sleep "$GAP"
+          done
+          echo "كل الواجهات سليمة طوال $ROUNDS نبضات."
