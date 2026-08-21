@@ -49,9 +49,11 @@
   // ⛔ الصفحة لا تقبل رابط بث من الـURL إطلاقاً — بارامتر `c` مفتاح من قائمة
   // مقفولة تحت. لو قبلنا رابطاً خام، أي حد يقدر يخلّي التطبيق يشغّل أي فيديو
   // من أي دومين جوّه إطار بيبان كأنه من يقين.
+  // المصدر: قناتا القرآن الكريم والسنة النبوية لهيئة الإذاعة والتلفزيون السعودية
+  // عبر موزّعها الرسمي Globecast (بديل win.holol.com اللي مات نهائياً 2026-08-21)
   var SOURCES = {
-    quran:  'https://win.holol.com/live/quran/playlist.m3u8',   // المسجد الحرام
-    sunnah: 'https://win.holol.com/live/sunnah/playlist.m3u8'   // المسجد النبوي
+    quran:  'https://cdn-globecast.akamaized.net/live/eds/saudi_quran/hls_roku/index.m3u8',   // المسجد الحرام
+    sunnah: 'https://cdn-globecast.akamaized.net/live/eds/saudi_sunnah/hls_roku/index.m3u8'   // المسجد النبوي
   };
 
   var key = (new URLSearchParams(location.search)).get('c') || '';
