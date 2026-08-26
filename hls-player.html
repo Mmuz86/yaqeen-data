@@ -52,7 +52,8 @@
   // المصدر: قناتا القرآن الكريم والسنة النبوية لهيئة الإذاعة والتلفزيون السعودية.
   // مستويان (بلاغ جودة 08-26 — Globecast أقصاه 480×384 «جودة سيئة جداً»):
   //   1) HD حتى 1080p: رابط مُوقَّع من API منصة «الأولى» الرسمية عبر سيرفرنا
-  //      (/live/hls/<key>) — التوكن عمره ~٣ دقائق فلازم يتجاب طازجاً وقت التشغيل.
+  //      (/live/hls/<key>) بيرجّع ماستر على نطاقنا بلا توكن (سيرفرنا بيجيب
+  //      توقيع الأولى لحظياً — عمره ١٢ث فقط، حادثة 08-26).
   //   2) SD مدفون: Globecast (بديل win.holol.com اللي مات نهائياً 2026-08-21) —
   //      بيشتغل حتى لو سيرفرنا كله وقع (شرط «يقين يعيش بلا سيرفره»).
   // الرابط الراجع من سيرفرنا لازم يعدّي isHdUrl() (https + مضيف البث الرسمي
@@ -63,7 +64,7 @@
     sunnah: 'https://cdn-globecast.akamaized.net/live/eds/saudi_sunnah/hls_roku/index.m3u8'   // المسجد النبوي
   };
   var HD_API = 'https://api.getyaqeen.com/live/hls/';
-  // مضيف HD الوحيد المقبول live.kwikmotion.com — الفحص الفعلي في isHdUrl()
+  // مضيفا HD المقبولان: نطاقنا (ماستر) و live.kwikmotion.com — الفحص في isHdUrl()
 
   var key = (new URLSearchParams(location.search)).get('c') || '';
   var url = Object.prototype.hasOwnProperty.call(SOURCES, key) ? SOURCES[key] : null;
@@ -239,7 +240,7 @@
   }
 
   /**
-   * الرابط HD من سيرفرنا — توكنه ~٣ دقائق فبيتجاب طازجاً مع كل تشغيل.
+   * الرابط HD من سيرفرنا — ماستر بلا توكن، بيتجاب مع كل تشغيل.
    * أي فشل هنا (سيرفر واقع/مهلة/رابط مش من المضيف الرسمي) = null ⇒ SD مباشرة،
    * فسقوط السيرفر بيكلّف جودة أقل مش شاشة خطأ.
    */
@@ -249,8 +250,13 @@
     if (typeof u !== 'string') return false;
     try {
       var p = new URL(u);
-      return p.protocol === 'https:' && p.hostname === 'live.kwikmotion.com' &&
-             !p.username && !p.password;
+      if (p.protocol !== 'https:' || p.username || p.password) return false;
+      // مضيفنا: ماستر بلا توكن على مسار مقفول بالحرف (حادثة 08-26 — التوكن
+      // الموقَّع عمره ١٢ث، فبقى سيرفرنا هو اللي يجيبه لحظياً بدل العميل).
+      if (p.hostname === 'api.getyaqeen.com') {
+        return /^\/live\/hls\/[a-z]+\/master\.m3u8$/.test(p.pathname);
+      }
+      return p.hostname === 'live.kwikmotion.com';
     } catch (e) { return false; }
   }
 
