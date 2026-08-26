@@ -49,12 +49,21 @@
   // ⛔ الصفحة لا تقبل رابط بث من الـURL إطلاقاً — بارامتر `c` مفتاح من قائمة
   // مقفولة تحت. لو قبلنا رابطاً خام، أي حد يقدر يخلّي التطبيق يشغّل أي فيديو
   // من أي دومين جوّه إطار بيبان كأنه من يقين.
-  // المصدر: قناتا القرآن الكريم والسنة النبوية لهيئة الإذاعة والتلفزيون السعودية
-  // عبر موزّعها الرسمي Globecast (بديل win.holol.com اللي مات نهائياً 2026-08-21)
+  // المصدر: قناتا القرآن الكريم والسنة النبوية لهيئة الإذاعة والتلفزيون السعودية.
+  // مستويان (بلاغ جودة 08-26 — Globecast أقصاه 480×384 «جودة سيئة جداً»):
+  //   1) HD حتى 1080p: رابط مُوقَّع من API منصة «الأولى» الرسمية عبر سيرفرنا
+  //      (/live/hls/<key>) — التوكن عمره ~٣ دقائق فلازم يتجاب طازجاً وقت التشغيل.
+  //   2) SD مدفون: Globecast (بديل win.holol.com اللي مات نهائياً 2026-08-21) —
+  //      بيشتغل حتى لو سيرفرنا كله وقع (شرط «يقين يعيش بلا سيرفره»).
+  // الرابط الراجع من سيرفرنا لازم يعدّي isHdUrl() (https + مضيف البث الرسمي
+  // حرفياً) وإلا يُرفض — نفس مبدأ «مفتاح لا رابط»: الصفحة عمرها ما تشغّل
+  // مصدراً غير معروف مقدماً.
   var SOURCES = {
     quran:  'https://cdn-globecast.akamaized.net/live/eds/saudi_quran/hls_roku/index.m3u8',   // المسجد الحرام
     sunnah: 'https://cdn-globecast.akamaized.net/live/eds/saudi_sunnah/hls_roku/index.m3u8'   // المسجد النبوي
   };
+  var HD_API = 'https://api.getyaqeen.com/live/hls/';
+  // مضيف HD الوحيد المقبول live.kwikmotion.com — الفحص الفعلي في isHdUrl()
 
   var key = (new URLSearchParams(location.search)).get('c') || '';
   var url = Object.prototype.hasOwnProperty.call(SOURCES, key) ? SOURCES[key] : null;
@@ -89,6 +98,13 @@
   var hls = null;
   var ready = false;
   var guard = null;
+  // 'hd' = رابط الأولى المُوقَّع · 'sd' = Globecast المدفون. فشل HD مش نهاية
+  // المطاف — بننزل درجة لـSD، وفشل SD هو اللي يطلّع واجهة الخطأ.
+  var tier = 'sd';
+  var recoveries = 0;   // سقف محاولات تعافي hls.js — كانت بلا سقف = تجمّد صامت للأبد
+  var lastFatal = 0;    // آخر خطأ قاتل — العدّاد يتصفّر بعد ٣٠ث استقرار، مش مع كل 'playing'
+                        // (مراجعة codex: التصفير الفوري كان بيلغي السقف في دورة خطأ↔تشغيل)
+  var gen = 0;          // رقم جيل المحاولة — نتيجة resolveHd قديمة ماتشغّلش فوق محاولة أحدث
 
   function arm() {
     clearTimeout(guard);
@@ -99,6 +115,7 @@
   function fail(reason) {
     clearTimeout(guard);
     if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
+    if (tier === 'hd') { startWith(SOURCES[key], 'sd'); return; } // انزل درجة قبل الاستسلام
     msg.textContent = 'تعذّر تشغيل البث الآن.';
     box.classList.add('on');
     tellApp('error', String(reason));
@@ -118,14 +135,22 @@
    * ونعيد المحاولة ونظهر زر فكّ الكتم. نفس سلوك مشغّل يوتيوب بالظبط.
    */
   function play() {
+    // تبديل المصدر (HD→SD مثلاً) بيرفض وعود play() المعلّقة بـAbortError —
+    // فحص الجيل يمنع رفضاً متأخراً من محاولة قديمة يطلّع فشلاً كاذباً فوق
+    // بث سليم شغّال (جولة التأكيد مع codex).
+    var myGen = gen;
     v.muted = false;
     var p = v.play();
     if (p && p.catch) {
       p.catch(function () {
+        if (myGen !== gen) return;
         v.muted = true;
         unmuteBtn.style.display = 'block';
         var p2 = v.play();
-        if (p2 && p2.catch) p2.catch(function (e) { fail('autoplay_' + (e && e.name)); });
+        if (p2 && p2.catch) p2.catch(function (e) {
+          if (myGen !== gen) return;
+          fail('autoplay_' + (e && e.name));
+        });
       });
     }
   }
@@ -139,16 +164,47 @@
   v.addEventListener('playing', markPlaying);
   v.addEventListener('loadeddata', function () { if (v.readyState >= 2) markPlaying(); });
 
-  function start() {
+  // حارس التجمّد (مراجعة codex): تجمّد بعد بدء التشغيل من غير حدث ERROR قاتل
+  // (شبكة ماتت بهدوء/توكن انتهى) كان بيسيب صورة ثابتة للأبد بلا رسالة —
+  // وده جوهر بلاغ «البث مش شغال». فحص كل ١٠ث: currentTime واقف مرتين = فشل.
+  // وهنا كمان بنصفّر عدّاد التعافي بعد ٣٠ث استقرار من آخر خطأ قاتل.
+  var lastTime = -1;
+  var stalls = 0;
+  setInterval(function () {
+    if (!ready) return;
+    if (recoveries && Date.now() - lastFatal > 30000) recoveries = 0;
+    // خلفية/قفل شاشة/إيقاف مقصود = توقف طبيعي مش تجمّد (جولة التأكيد مع codex)
+    if (document.hidden || v.paused || v.ended) { stalls = 0; lastTime = -1; return; }
+    if (v.currentTime === lastTime) {
+      stalls += 1;
+      if (stalls >= 2) { stalls = 0; ready = false; fail('stalled'); }
+    } else {
+      stalls = 0;
+    }
+    lastTime = v.currentTime;
+  }, 10000);
+  document.addEventListener('visibilitychange', function () { stalls = 0; lastTime = -1; });
+
+  var nativeErr = null; // مستمع الخطأ في المسار الأصلي — يتشال قبل ما يتضاف تاني
+                        // (مراجعة codex: once مع retry متكرر بتتراكم وتطلّع خطأ كاذب)
+
+  function startWith(u, t) {
+    gen += 1;
+    tier = t;
     ready = false;
     box.classList.remove('on');
     unmuteBtn.style.display = 'none';
+    recoveries = 0;
+    lastTime = -1;
+    stalls = 0;
     arm();
 
     // سفاري/iOS بيشغّل HLS أصلاً بلا مكتبة — أخفّ وأدقّ من MSE
     if (v.canPlayType('application/vnd.apple.mpegurl')) {
-      v.src = url;
-      v.addEventListener('error', function () { fail('native_video'); }, { once: true });
+      if (nativeErr) v.removeEventListener('error', nativeErr);
+      nativeErr = function () { fail('native_video'); };
+      v.addEventListener('error', nativeErr, { once: true });
+      v.src = u;
       play();
       return;
     }
@@ -166,13 +222,62 @@
     hls.on(window.Hls.Events.MANIFEST_PARSED, play);
     hls.on(window.Hls.Events.ERROR, function (_e, data) {
       if (!data || !data.fatal) return;
-      // الأخطاء القاتلة القابلة للتعافي: الشبكة والوسائط. غيرها = استسلام
-      if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) { try { hls.startLoad(); return; } catch (x) {} }
-      else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) { try { hls.recoverMediaError(); return; } catch (x) {} }
+      // الأخطاء القاتلة القابلة للتعافي: الشبكة والوسائط — بسقف محاولات.
+      // بلا السقف كان التعافي بيلفّ في صمت للأبد: صورة مجمّدة بلا رسالة ولا زر
+      // («البث مش شغال» في جوهره). ٣ محاولات وبعدها fail() اللي بينزل درجة أو
+      // بيطلّع الواجهة — والعدّاد بيتصفّر مع كل 'playing' فالتقطيع العابر مش بيتراكم.
+      lastFatal = Date.now();
+      if (recoveries < 3) {
+        recoveries += 1;
+        if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) { try { hls.startLoad(); return; } catch (x) {} }
+        else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) { try { hls.recoverMediaError(); return; } catch (x) {} }
+      }
       fail('hls_' + (data.details || data.type));
     });
-    hls.loadSource(url);
+    hls.loadSource(u);
     hls.attachMedia(v);
+  }
+
+  /**
+   * الرابط HD من سيرفرنا — توكنه ~٣ دقائق فبيتجاب طازجاً مع كل تشغيل.
+   * أي فشل هنا (سيرفر واقع/مهلة/رابط مش من المضيف الرسمي) = null ⇒ SD مباشرة،
+   * فسقوط السيرفر بيكلّف جودة أقل مش شاشة خطأ.
+   */
+  /** فحص صارم (مراجعة codex): تحليل URL فعلي بدل فحص بادئة نصي — https حصراً
+   *  + hostname مطابق بالحرف + بلا credentials. */
+  function isHdUrl(u) {
+    if (typeof u !== 'string') return false;
+    try {
+      var p = new URL(u);
+      return p.protocol === 'https:' && p.hostname === 'live.kwikmotion.com' &&
+             !p.username && !p.password;
+    } catch (e) { return false; }
+  }
+
+  function resolveHd() {
+    return new Promise(function (resolve) {
+      var done = false;
+      var settle = function (val) { if (!done) { done = true; resolve(val); } };
+      setTimeout(function () { settle(null); }, 6000);
+      fetch(HD_API + encodeURIComponent(key), { cache: 'no-store' })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { settle(j && isHdUrl(j.url) ? j.url : null); })
+        .catch(function () { settle(null); });
+    });
+  }
+
+  function start() {
+    gen += 1;
+    var myGen = gen;
+    ready = false;
+    box.classList.remove('on');
+    arm(); // يغطي فترة جلب الرابط كمان — مفيش لحظة بلا حارس
+    resolveHd().then(function (hd) {
+      // نتيجة محاولة قديمة (ضغطات retry متتالية) ماتشغّلش فوق الأحدث
+      if (myGen !== gen || ready) return;
+      if (hd) startWith(hd, 'hd');
+      else startWith(SOURCES[key], 'sd');
+    });
   }
 
   document.getElementById('retry').addEventListener('click', start);
