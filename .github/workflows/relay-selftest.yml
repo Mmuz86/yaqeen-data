@@ -1,0 +1,14 @@
+name: relay-selftest
+on: { workflow_dispatch: }
+permissions:
+  contents: read
+  actions: write
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WF: relay-target.yml
+        run: sh scripts/uptime-relay.sh
