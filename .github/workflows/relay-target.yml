@@ -1,8 +1,0 @@
-name: relay-target
-on: { workflow_dispatch: }
-permissions: { contents: read }
-jobs:
-  noop:
-    runs-on: ubuntu-latest
-    steps:
-      - run: echo "اتشعلت من التتابُع ✅"

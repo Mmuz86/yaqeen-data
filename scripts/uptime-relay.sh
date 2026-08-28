@@ -28,15 +28,25 @@ api() {
 }
 
 # عدد تشغيلات نفس الخيط القايمة دلوقتي، من غير التشغيلة الحالية.
+#
+# ⚠️ لازم قراءة JSON حقيقية مش grep: كل عنصر run جوّاه كائنات متداخلة
+# (actor, repository, head_commit...) فيها "id" كمان. grep بيعدّها كلها،
+# فالتشغيلة بتشوف نفسها كأنها ٧ تشغيلات ومتشعلش خليفتها أبداً — السلسلة
+# بتموت من أول حلقة. اتصادت في التحقق يوم 2026-08-28 قبل ما تتنشر.
 live=0
 for st in queued in_progress; do
-  ids=$(api "$API/actions/workflows/$WF/runs?status=$st&per_page=100" \
-        | grep -o '"id"[[:space:]]*:[[:space:]]*[0-9]\+' \
-        | grep -o '[0-9]\+$')
-  for id in $ids; do
-    [ "$id" = "$GITHUB_RUN_ID" ] && continue
-    live=$((live + 1))
-  done
+  c=$(api "$API/actions/workflows/$WF/runs?status=$st&per_page=100" | python3 -c '
+import json,os,sys
+me=str(os.environ.get("GITHUB_RUN_ID","0"))
+try:
+    runs=json.load(sys.stdin).get("workflow_runs",[])
+except Exception:
+    print("ERR"); raise SystemExit(0)
+print(sum(1 for r in runs if str(r.get("id")) != me))
+')
+  # لو القراءة فشلت، نعتبرها "فيه تشغيلة" (الأأمن: بلاش تكاثر) والـcron يعوّض.
+  [ "$c" = "ERR" ] && { echo "::warning::تعذّر قراءة حالة $WF"; exit 0; }
+  live=$((live + c))
 done
 
 if [ "$live" -gt 0 ]; then
