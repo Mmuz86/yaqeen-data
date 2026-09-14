@@ -90,6 +90,15 @@
     guard = setTimeout(function () { if (!ready) fail('timeout'); }, 15000);
   }
 
+  // عرض واجهة الخطأ مباشرة بلا أي احتياطي — مسار التجمّد بيستعملها عشان
+  // ما يحرقش لقطة nocookie المحجوزة لأخطاء صلاحيات الـembed.
+  function showError(reason) {
+    clearTimeout(guard);
+    msg.textContent = 'تعذّر تشغيل البث داخل التطبيق.';
+    box.classList.add('on');
+    tellApp('error', String(reason));
+  }
+
   function fail(reason) {
     clearTimeout(guard);
     // محاولة أخيرة على دومين no-cookie قبل الاستسلام
@@ -99,9 +108,7 @@
       build();
       return;
     }
-    msg.textContent = 'تعذّر تشغيل البث داخل التطبيق.';
-    box.classList.add('on');
-    tellApp('error', String(reason));
+    showError(reason);
   }
 
   function build() {
@@ -195,7 +202,10 @@
       build();
       return;
     }
-    fail('stalled');
+    // showError مش fail: التجمّد مشكلة شبكة/بث، وتبديل الدومين ما بيداويهاش —
+    // بس كان بيحرق اللقطة الوحيدة المحجوزة لأخطاء 101/150/153، فأول خطأ
+    // صلاحيات حقيقي بعد كده كان بيروح للشاشة النهائية بلا محاولة.
+    showError('stalled');
   }
 
   setInterval(function () {
@@ -237,6 +247,10 @@
     box.classList.remove('on');
     document.getElementById('unmute').style.display = 'none';
     triedNoCookie = false;
+    // تصفير ميزانية إعادة البناء كمان — من غيره ضغطة المستخدم بتديله
+    // تجمّد واحد بس بدل ٣ (لو لسه جوّه نافذة الـ٦٠ث). نفس ما بيعمل
+    // startWith في مشغّل HLS مع عدّاد recoveries.
+    stallRebuilds = 0;
     host = 'https://www.youtube.com';
     build();
   });
