@@ -108,6 +108,10 @@
     document.body.appendChild(d);
 
     ready = false;
+    // تصفير حارس التجمّد مع كل بناء — بقايا المحاولة السابقة كانت هتولّد
+    // إنذار كاذب على مشغّل لسه ما بدأش (نفس ترتيب startWith في مشغّل HLS).
+    lastTime = -1;
+    stalls = 0;
     arm();
 
     player = new YT.Player('pl', {
@@ -149,6 +153,45 @@
       }
     });
   }
+
+  // حارس التجمّد — المقابل لحارس مشغّل HLS، كان ناقص هنا.
+  //
+  // arm() بيغطّي فشل **البداية** بس: لو المشغّل ما وصلش للفيديو في ١٥ث.
+  // بس أخطر حالة هي التجمّد **بعد** ما التشغيل بدأ: يوتيوب بيوقف البث أو
+  // الشبكة بتموت بهدوء من غير ما onError يتنادى إطلاقاً — فتفضل آخر صورة
+  // ثابتة على الشاشة للأبد بلا رسالة ولا زر. ده جوهر بلاغ «البث مش شغال»،
+  // ومشغّل HLS بيصطاده من 08-26 بينما ده كان أعمى عنه تماماً.
+  //
+  // الفحص: getCurrentTime() لازم يتقدّم. واقف مرتين (٢٠ث) = تجمّد.
+  // BUFFERING مش مستثنى عمداً — تخزين مؤقت بلا نهاية هو التجمّد الصامت نفسه،
+  // وهو نفس سلوك حارس HLS (currentTime بيقف في البفرة برضه فبيتصاد).
+  // المستثنى: إيقاف مقصود، نهاية البث، وخلفية/قفل شاشة = توقف طبيعي.
+  var lastTime = -1;
+  var stalls = 0;
+  setInterval(function () {
+    if (!ready || !player) return;
+    if (document.hidden) { stalls = 0; lastTime = -1; return; }
+    var t;
+    try {
+      if (typeof player.getCurrentTime !== 'function') return;
+      var st = typeof player.getPlayerState === 'function' ? player.getPlayerState() : null;
+      if (window.YT && YT.PlayerState &&
+          (st === YT.PlayerState.PAUSED || st === YT.PlayerState.ENDED)) {
+        stalls = 0; lastTime = -1; return;
+      }
+      t = player.getCurrentTime();
+    } catch (x) { return; }
+    // المشغّل اتهدّ أو لسه بيتبني — مش تجمّد، نستنى الدورة الجاية
+    if (typeof t !== 'number' || isNaN(t)) return;
+    if (t === lastTime) {
+      stalls += 1;
+      if (stalls >= 2) { stalls = 0; ready = false; fail('stalled'); return; }
+    } else {
+      stalls = 0;
+    }
+    lastTime = t;
+  }, 10000);
+  document.addEventListener('visibilitychange', function () { stalls = 0; lastTime = -1; });
 
   document.getElementById('retry').addEventListener('click', function () {
     box.classList.remove('on');
