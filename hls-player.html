@@ -7,7 +7,10 @@
 <style>
   html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}
   video{position:absolute;top:0;left:0;width:100%;height:100%;object-fit:contain;background:#000}
-  #m{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;
+  /* z-index لازم: #unmute (5) و#src (4) ليهم ترتيب موجب، فكانوا بيترسموا
+     فوق واجهة الخطأ رغم إنها بعدهم في الـDOM — يعني شارة «المصدر الرسمي»
+     وزرّ الصوت بيفضلوا طايفين فوق رسالة «تعذّر تشغيل البث». */
+  #m{position:absolute;inset:0;z-index:10;display:none;flex-direction:column;align-items:center;
      justify-content:center;gap:14px;padding:24px;box-sizing:border-box;
      color:#EDE6D3;font-family:Tajawal,sans-serif;font-size:15px;text-align:center;line-height:1.7}
   #m.on{display:flex}
@@ -64,6 +67,14 @@
     sunnah: 'https://cdn-globecast.akamaized.net/live/eds/saudi_sunnah/hls_roku/index.m3u8'   // المسجد النبوي
   };
   var HD_API = 'https://api.getyaqeen.com/live/hls/';
+
+  // الحاضنون المسموح لهم يستقبلوا بلاغات الحالة (tellApp). مقفولة بالحرف زي
+  // SOURCES — الهدف المفتوح '*' كان بيسرّب حالة المشاهدة لأي موقع يحضن الإطار.
+  var PARENT_ORIGINS = [
+    'https://getyaqeen.com',
+    'https://www.getyaqeen.com',
+    'https://app.getyaqeen.com'
+  ];
   // مضيفا HD المقبولان: نطاقنا (ماستر) و live.kwikmotion.com — الفحص في isHdUrl()
 
   var key = (new URLSearchParams(location.search)).get('c') || '';
@@ -87,11 +98,20 @@
           JSON.stringify({ source: 'yaqeen-live', kind: kind, detail: detail || null, channel: key })
         );
       }
-      // على الويب الصفحة بتتحمّل في iframe — نبلّغ الحاضن بنفس البروتوكول
+      // على الويب الصفحة بتتحمّل في iframe — نبلّغ الحاضن بنفس البروتوكول.
+      //
+      // ⛔ لا نبعت لـ'*' إطلاقاً: مع الهدف المفتوح أي موقع يقدر يحمّل المشغّل
+      // في إطار ويسمع حالة المشاهدة (القناة + التشغيل/الفشل). نفس مبدأ «مفتاح
+      // لا رابط» مطبَّق على الخرج: قائمة حاضنين مقفولة، والمتصفح نفسه بيسقط
+      // الرسالة لو أصل الحاضن مش مطابق بالحرف — فبنلفّ على القائمة وواحد بس
+      // بيوصل. أي نطاق حاضن جديد لازم يتضاف هنا صراحةً.
       if (window.parent && window.parent !== window) {
-        window.parent.postMessage(
-          JSON.stringify({ source: 'yaqeen-live', kind: kind, detail: detail || null, channel: key }), '*'
-        );
+        var payload = JSON.stringify({
+          source: 'yaqeen-live', kind: kind, detail: detail || null, channel: key
+        });
+        for (var i = 0; i < PARENT_ORIGINS.length; i++) {
+          try { window.parent.postMessage(payload, PARENT_ORIGINS[i]); } catch (e) {}
+        }
       }
     } catch (e) {}
   }
@@ -226,7 +246,8 @@
       // الأخطاء القاتلة القابلة للتعافي: الشبكة والوسائط — بسقف محاولات.
       // بلا السقف كان التعافي بيلفّ في صمت للأبد: صورة مجمّدة بلا رسالة ولا زر
       // («البث مش شغال» في جوهره). ٣ محاولات وبعدها fail() اللي بينزل درجة أو
-      // بيطلّع الواجهة — والعدّاد بيتصفّر مع كل 'playing' فالتقطيع العابر مش بيتراكم.
+      // بيطلّع الواجهة — والعدّاد بيتصفّر بعد ٣٠ث استقرار من آخر خطأ قاتل
+      // (مش مع كل 'playing': التصفير الفوري كان بيلغي السقف في دورة خطأ↔تشغيل).
       lastFatal = Date.now();
       if (recoveries < 3) {
         recoveries += 1;
