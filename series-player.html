@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>مشغّل السلسلة</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}
+  iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
+  #m{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;
+     justify-content:center;gap:14px;padding:24px;box-sizing:border-box;
+     color:#EDE6D3;font-family:Tajawal,sans-serif;font-size:15px;text-align:center;line-height:1.7}
+  #m.on{display:flex}
+  .row{display:flex;flex-direction:row-reverse;gap:10px;flex-wrap:wrap;justify-content:center}
+  a.btn,button.btn{
+    appearance:none;cursor:pointer;font-family:inherit;font-size:13.5px;
+    padding:9px 18px;border-radius:10px;text-decoration:none;
+    border:1px solid rgba(232,206,147,.55);background:transparent;color:#E8CE93}
+  a.btn.p{background:#E8CE93;border-color:#E8CE93;color:#0B3B32}
+  #unmute{display:none;position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+    z-index:5;cursor:pointer;font-family:Tajawal,sans-serif;font-size:13.5px;
+    padding:9px 18px;border-radius:999px;background:rgba(11,59,50,.92);
+    border:1px solid #E8CE93;color:#E8CE93}
+</style>
+</head>
+<body>
+<button id="unmute" type="button">🔊 اضغط لتشغيل الصوت</button>
+<div id="m">
+  <div id="msg">تعذّر تشغيل الحلقة داخل التطبيق.</div>
+  <div class="row">
+    <button class="btn" id="retry" type="button">إعادة المحاولة</button>
+    <a class="btn p" id="yt" href="#" target="_blank" rel="noopener">افتح في يوتيوب</a>
+  </div>
+</div>
+<script>
+(function () {
+  // مشغّل حلقة واحدة من سلسلة مضمَّنة رسمياً (تحديث ٣٣٩ — سلسلة السيرة النبوية).
+  // نفس فكرة live-player.html: صفحة على دومين https حقيقي يحمّلها التطبيق في
+  // WebView (أو iframe على الويب) فيصبح referrer/origin سليماً ويشتغل التضمين
+  // (خطأ 153 بيحصل مع /embed كصفحة عليا). الفرق عن مشغّل البث:
+  //   • ?t=ثوانٍ لاستئناف الحلقة من آخر موضع.
+  //   • رسائل progress كل ٥ ثوانٍ (sec/dur) + ended — التطبيق يحفظ الموضع ويعلّم
+  //     الحلقة «مُشاهَدة» وينتقل للتالية.
+  //   • الرسائل تُبعث للتطبيق (ReactNativeWebView) وللصفحة الحاضنة (الويب).
+  var q = new URLSearchParams(location.search);
+  var v = q.get('v') || '';
+  var t0 = parseInt(q.get('t') || '0', 10);
+  if (!(t0 >= 0 && t0 < 86400)) t0 = 0;
+  var box = document.getElementById('m');
+  var msg = document.getElementById('msg');
+
+  if (!/^[A-Za-z0-9_-]{11}$/.test(v)) {
+    msg.textContent = 'معرّف حلقة غير صالح';
+    box.classList.add('on');
+    return;
+  }
+
+  var watchUrl = 'https://www.youtube.com/watch?v=' + v;
+  document.getElementById('yt').href = watchUrl;
+
+  function showUnmute(p) {
+    var b = document.getElementById('unmute');
+    b.style.display = 'block';
+    b.onclick = function () {
+      try { p.unMute(); p.setVolume(100); p.playVideo(); } catch (x) {}
+      b.style.display = 'none';
+    };
+  }
+
+  function tellApp(kind, detail) {
+    var payload = { source: 'yaqeen-series', kind: kind, detail: detail || null, videoId: v };
+    var s = JSON.stringify(payload);
+    try {
+      if (window.ReactNativeWebView && window.ReactNativeWebView.postMessage) {
+        window.ReactNativeWebView.postMessage(s);
+      }
+    } catch (e) {}
+    try {
+      // الويب: الصفحة داخل iframe في تطبيق الويب — لا أسرار في الرسالة
+      if (window.parent && window.parent !== window) window.parent.postMessage(s, '*');
+    } catch (e) {}
+  }
+
+  var player = null;
+  var host = 'https://www.youtube.com';   // البديل: youtube-nocookie.com
+  var triedNoCookie = false;
+  var ready = false;
+  var guard = null;
+  var ticker = null;
+
+  function arm() {
+    clearTimeout(guard);
+    guard = setTimeout(function () { if (!ready) fail('timeout'); }, 15000);
+  }
+
+  function stopTicker() { clearInterval(ticker); ticker = null; }
+
+  function report(p) {
+    try {
+      var sec = Math.floor(p.getCurrentTime() || 0);
+      var dur = Math.floor(p.getDuration() || 0);
+      if (dur > 0) tellApp('progress', { sec: sec, dur: dur });
+    } catch (x) {}
+  }
+
+  function fail(reason) {
+    clearTimeout(guard);
+    stopTicker();
+    if (!triedNoCookie) {
+      triedNoCookie = true;
+      host = 'https://www.youtube-nocookie.com';
+      build();
+      return;
+    }
+    msg.textContent = 'تعذّر تشغيل الحلقة داخل التطبيق.';
+    box.classList.add('on');
+    tellApp('error', String(reason));
+  }
+
+  function build() {
+    var old = document.getElementById('pl');
+    if (old && old.parentNode) old.parentNode.removeChild(old);
+    var d = document.createElement('div');
+    d.id = 'pl';
+    document.body.appendChild(d);
+
+    ready = false;
+    stopTicker();
+    arm();
+
+    player = new YT.Player('pl', {
+      host: host,
+      videoId: v,
+      playerVars: {
+        autoplay: 1, playsinline: 1, rel: 0, start: t0,
+        origin: location.origin, widget_referrer: location.origin
+      },
+      events: {
+        onReady: function (e) {
+          try {
+            e.target.playVideo();
+            setTimeout(function () {
+              if (!ready) {
+                try {
+                  e.target.mute();
+                  e.target.playVideo();
+                  showUnmute(e.target);
+                } catch (x) {}
+              }
+            }, 2500);
+          } catch (x) {}
+        },
+        onStateChange: function (e) {
+          var p = e.target;
+          if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.BUFFERING) {
+            if (!ready) {
+              ready = true;
+              clearTimeout(guard);
+              box.classList.remove('on');
+              tellApp('playing');
+            }
+          }
+          if (e.data === YT.PlayerState.PLAYING) {
+            if (!ticker) ticker = setInterval(function () { report(p); }, 5000);
+          } else {
+            stopTicker();
+            if (e.data === YT.PlayerState.PAUSED) { report(p); tellApp('paused'); }
+          }
+          if (e.data === YT.PlayerState.ENDED) {
+            stopTicker();
+            report(p);
+            tellApp('ended');
+          }
+        },
+        onError: function (e) { fail('yt_' + e.data); }
+      }
+    });
+  }
+
+  document.getElementById('retry').addEventListener('click', function () {
+    box.classList.remove('on');
+    document.getElementById('unmute').style.display = 'none';
+    triedNoCookie = false;
+    host = 'https://www.youtube.com';
+    build();
+  });
+
+  document.getElementById('yt').addEventListener('click', function (ev) {
+    if (window.ReactNativeWebView) {
+      ev.preventDefault();
+      tellApp('open_youtube', watchUrl);
+    }
+  });
+
+  window.onYouTubeIframeAPIReady = build;
+
+  var s = document.createElement('script');
+  s.src = 'https://www.youtube.com/iframe_api';
+  s.onerror = function () { fail('api_load'); };
+  document.head.appendChild(s);
+})();
+</script>
+</body>
+</html>
