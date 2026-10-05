@@ -1,0 +1,49 @@
+# بعث السلسلة من برّه الرَنَر — خيط الإنعاش.
+#
+# العطل اللي بيحلّه (2026-10-05، فجوة ٤٥ دقيقة بلا تغطية):
+# التتابُع الذاتي كان **خطوة جوّه نفس الـjob** بتاع الفحص. لما جيت هَب يسحب
+# الرَنَر في نص الشغل:
+#   ##[error]The runner has received a shutdown signal … exit code 143
+# الخطوة اللي بتشعل الخليفة بتتعلّم «skipped» رغم if: always() — لأن الرَنَر
+# نفسه بيموت، مفيش حاجة تنفّذ الخطوة. وكمان تشغيلة ما لقيتش رَنَر خلاص
+# (cancelled وsteps=0) عمرها ما وصلت للخطوة دي. النتيجة: التلات خيوط ماتوا
+# مع بعض والـcron (المجهود-أفضل) سقط ٤ مواعيد ورا بعض ⇒ صفر تغطية.
+#
+# الحل: الإشعال بقى **تشغيلة منفصلة** بيولّدها جيت هَب نفسه بعد ما التشغيلة
+# تخلص بأي نتيجة (workflow_run/completed بيولع للنجاح والفشل والإلغاء سوا).
+# رَنَر الفحص لو اتقتل، ده مابيأثّرش على الإنعاش — بنية مختلفة وتشغيلة تانية.
+name: uptime-relay-watch
+
+on:
+  workflow_run:
+    workflows: [uptime, uptime-b, uptime-c]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: write          # لازم عشان نشعل خليفة الخيط
+
+# الإنعاش لازم يخلص لوحده لكل خيط — مانلغيش إنعاش جاري لخيط تاني.
+concurrency:
+  group: relay-${{ github.event.workflow.path }}
+  cancel-in-progress: false
+
+jobs:
+  reignite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # نفس حارس التكاثر المستخدم في التتابُع الأصلي: مش بنشعل لو فيه
+      # تشغيلة قايمة للخيط ده (الـcron ممكن يكون سبقنا).
+      - name: إشعال خليفة الخيط اللي خلص
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WF_PATH: ${{ github.event.workflow.path }}
+        run: |
+          set -eu
+          WF="$(basename "$WF_PATH")"
+          echo "الخيط اللي خلص: $WF (نتيجة: ${{ github.event.workflow_run.conclusion }})"
+          export WF
+          sh scripts/uptime-relay.sh
