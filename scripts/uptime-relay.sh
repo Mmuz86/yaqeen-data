@@ -34,7 +34,9 @@ api() {
 # فالتشغيلة بتشوف نفسها كأنها ٧ تشغيلات ومتشعلش خليفتها أبداً — السلسلة
 # بتموت من أول حلقة. اتصادت في التحقق يوم 2026-08-28 قبل ما تتنشر.
 live=0
-for st in queued in_progress; do
+# pending = مستنية في مجموعة concurrency (2026-10-07): هي خليفة جاهزة فعلاً،
+# فإشعال واحدة تانية فوقها يلغيها ويولّد ضجّة بلا فايدة.
+for st in queued pending in_progress; do
   c=$(api "$API/actions/workflows/$WF/runs?status=$st&per_page=100" | python3 -c '
 import json,os,sys
 me=str(os.environ.get("GITHUB_RUN_ID","0"))
