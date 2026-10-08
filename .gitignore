@@ -1,0 +1,34 @@
+# حاجز تسريب الأسرار — المستودع عام، وأي ملف بيئة بيتكوميت مرة واحدة بيفضل
+# في التاريخ للأبد حتى لو اتمسح بعدين. المنع أرخص من التدوير.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+*.keystore
+credentials.json
+service-account*.json
+
+# مخرجات أدوات محلية — مش جزء من المستودع
+graphify-out/
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# فضلات نظام ومحررات
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# ملفات مؤقتة من سكربتات الفحص
+/tmp/
+*.log

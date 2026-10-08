@@ -7,7 +7,11 @@
 <style>
   html,body{margin:0;padding:0;background:#000;height:100%;overflow:hidden}
   iframe{position:absolute;top:0;left:0;width:100%;height:100%;border:0}
-  #m{position:absolute;inset:0;display:none;flex-direction:column;align-items:center;
+  /* z-index لازم: الـiframe بيتضاف لـbody بعد #m فبيترسم فوقه بترتيب الـDOM
+     (الاتنين absolute بلا ترتيب صريح). من غير ده واجهة الخطأ بتتغطّى بإطار
+     يوتيوب المتجمّد — الرسالة مش بتبان وزر «إعادة المحاولة» مش بيتضغط أصلاً
+     لأن الإطار بياكل الضغطات. القيمة أعلى من #unmute (5) عشان تغطّيه كمان. */
+  #m{position:absolute;inset:0;z-index:10;display:none;flex-direction:column;align-items:center;
      justify-content:center;gap:14px;padding:24px;box-sizing:border-box;
      color:#EDE6D3;font-family:Tajawal,sans-serif;font-size:15px;text-align:center;line-height:1.7}
   #m.on{display:flex}
@@ -86,6 +90,15 @@
     guard = setTimeout(function () { if (!ready) fail('timeout'); }, 15000);
   }
 
+  // عرض واجهة الخطأ مباشرة بلا أي احتياطي — مسار التجمّد بيستعملها عشان
+  // ما يحرقش لقطة nocookie المحجوزة لأخطاء صلاحيات الـembed.
+  function showError(reason) {
+    clearTimeout(guard);
+    msg.textContent = 'تعذّر تشغيل البث داخل التطبيق.';
+    box.classList.add('on');
+    tellApp('error', String(reason));
+  }
+
   function fail(reason) {
     clearTimeout(guard);
     // محاولة أخيرة على دومين no-cookie قبل الاستسلام
@@ -95,12 +108,14 @@
       build();
       return;
     }
-    msg.textContent = 'تعذّر تشغيل البث داخل التطبيق.';
-    box.classList.add('on');
-    tellApp('error', String(reason));
+    showError(reason);
   }
 
   function build() {
+    // destroy() قبل شيل العنصر: من غيره كائن YT.Player القديم ومستمع رسائله
+    // بيفضلوا عايشين مع كل إعادة بناء — وحارس التجمّد خلّى إعادة البناء
+    // حدث عادي مش استثناء، فالتسريب بيتراكم.
+    if (player) { try { player.destroy(); } catch (x) {} player = null; }
     var old = document.getElementById('pl');
     if (old && old.parentNode) old.parentNode.removeChild(old);
     var d = document.createElement('div');
@@ -108,6 +123,10 @@
     document.body.appendChild(d);
 
     ready = false;
+    // تصفير حارس التجمّد مع كل بناء — بقايا المحاولة السابقة كانت هتولّد
+    // إنذار كاذب على مشغّل لسه ما بدأش (نفس ترتيب startWith في مشغّل HLS).
+    lastTime = -1;
+    stalls = 0;
     arm();
 
     player = new YT.Player('pl', {
@@ -150,10 +169,88 @@
     });
   }
 
+  // حارس التجمّد — المقابل لحارس مشغّل HLS، كان ناقص هنا.
+  //
+  // arm() بيغطّي فشل **البداية** بس: لو المشغّل ما وصلش للفيديو في ١٥ث.
+  // بس أخطر حالة هي التجمّد **بعد** ما التشغيل بدأ: يوتيوب بيوقف البث أو
+  // الشبكة بتموت بهدوء من غير ما onError يتنادى إطلاقاً — فتفضل آخر صورة
+  // ثابتة على الشاشة للأبد بلا رسالة ولا زر. ده جوهر بلاغ «البث مش شغال»،
+  // ومشغّل HLS بيصطاده من 08-26 بينما ده كان أعمى عنه تماماً.
+  //
+  // الفحص: getCurrentTime() لازم يتقدّم. واقف مرتين (٢٠ث) = تجمّد.
+  // BUFFERING مش مستثنى عمداً — تخزين مؤقت بلا نهاية هو التجمّد الصامت نفسه،
+  // وهو نفس سلوك حارس HLS (currentTime بيقف في البفرة برضه فبيتصاد).
+  // المستثنى: إيقاف مقصود، نهاية البث، وخلفية/قفل شاشة = توقف طبيعي.
+  var lastTime = -1;
+  var stalls = 0;
+  var stallRebuilds = 0;   // إعادات البناء بسبب تجمّد — بسقف وبتصفير بعد استقرار
+  var lastStall = 0;
+
+  // رد الفعل على التجمّد **مش** fail(). fail() بيحرق احتياطي youtube-nocookie
+  // اللي محجوز لأخطاء صلاحيات الـembed (101/150/153)، وهو لقطة واحدة لكل
+  // عمر الصفحة. لو التجمّد حرقه: (أ) تبديل الدومين ما بيعملش حاجة لمشكلة
+  // شبكة/بث أصلاً — نفس الـCDN ونفس السرعة؛ (ب) أول تجمّد تاني بعده بيروح
+  // للفرع النهائي مباشرة فتموت الصفحة، حتى لو التجمّد الأول كان من ٦ ساعات.
+  // بدلها: إعادة بناء على **نفس** المضيف بسقف ٣ مرات، والعدّاد بيتصفّر بعد
+  // ٦٠ث استقرار (مش ٣٠ث زي مشغّل HLS لأن كشف التجمّد نفسه بياخد ٢٠ث،
+  // فنافذة ٣٠ث كانت هتتصفّر فوراً وتلغي السقف).
+  function stalled() {
+    ready = false;
+    lastStall = Date.now();
+    if (stallRebuilds < 3) {
+      stallRebuilds += 1;
+      build();
+      return;
+    }
+    // showError مش fail: التجمّد مشكلة شبكة/بث، وتبديل الدومين ما بيداويهاش —
+    // بس كان بيحرق اللقطة الوحيدة المحجوزة لأخطاء 101/150/153، فأول خطأ
+    // صلاحيات حقيقي بعد كده كان بيروح للشاشة النهائية بلا محاولة.
+    showError('stalled');
+  }
+
+  setInterval(function () {
+    if (!ready || !player) return;
+    if (stallRebuilds && Date.now() - lastStall > 60000) stallRebuilds = 0;
+    if (document.hidden) { stalls = 0; lastTime = -1; return; }
+    var t, buffering = false;
+    try {
+      if (typeof player.getCurrentTime !== 'function') return;
+      var st = typeof player.getPlayerState === 'function' ? player.getPlayerState() : null;
+      if (window.YT && YT.PlayerState) {
+        // إيقاف مقصود أو نهاية البث = توقف طبيعي مش تجمّد.
+        // ⚠️ نقطة عمياء معروفة: لو الأوتوبلاي اتمنع بعد BUFFERING، الحالة
+        // بتبقى PAUSED فالحارس بيعديها. مستنّى كده عمداً — الحارس ما يقدرش
+        // يفرّق بين إيقاف المستخدم وإيقاف المنصة، وقتل إيقاف مقصود أسوأ.
+        if (st === YT.PlayerState.PAUSED || st === YT.PlayerState.ENDED) {
+          stalls = 0; lastTime = -1; return;
+        }
+        buffering = st === YT.PlayerState.BUFFERING;
+      }
+      t = player.getCurrentTime();
+    } catch (x) { return; }
+    // المشغّل اتهدّ أو لسه بيتبني — مش تجمّد، نستنى الدورة الجاية
+    if (typeof t !== 'number' || isNaN(t)) return;
+    // البفرة بتاخد مهلة أطول (٤٠ث): شبكة بطيئة بتتعافى لوحدها وABR بتاع
+    // يوتيوب بينزل الجودة، وإعادة البناء وقتها بتكلّف أكتر من الاستنى.
+    // تجمّد وهو PLAYING (صورة واقفة بلا خطأ) = ٢٠ث زي حارس HLS.
+    if (t === lastTime) {
+      stalls += 1;
+      if (stalls >= (buffering ? 4 : 2)) { stalls = 0; stalled(); return; }
+    } else {
+      stalls = 0;
+    }
+    lastTime = t;
+  }, 10000);
+  document.addEventListener('visibilitychange', function () { stalls = 0; lastTime = -1; });
+
   document.getElementById('retry').addEventListener('click', function () {
     box.classList.remove('on');
     document.getElementById('unmute').style.display = 'none';
     triedNoCookie = false;
+    // تصفير ميزانية إعادة البناء كمان — من غيره ضغطة المستخدم بتديله
+    // تجمّد واحد بس بدل ٣ (لو لسه جوّه نافذة الـ٦٠ث). نفس ما بيعمل
+    // startWith في مشغّل HLS مع عدّاد recoveries.
+    stallRebuilds = 0;
     host = 'https://www.youtube.com';
     build();
   });
