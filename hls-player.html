@@ -106,6 +106,8 @@
   var lastFatal = 0;    // آخر خطأ قاتل — العدّاد يتصفّر بعد ٣٠ث استقرار، مش مع كل 'playing'
                         // (مراجعة codex: التصفير الفوري كان بيلغي السقف في دورة خطأ↔تشغيل)
   var gen = 0;          // رقم جيل المحاولة — نتيجة resolveHd قديمة ماتشغّلش فوق محاولة أحدث
+  var hdSeen = false;   // سيرفرنا رجّع رابط HD في دورة التشغيل دي (اتجرّب فعلاً)
+  var hdRetried = false; // محاولة حلّ HD تانية (أطول) بعد فشل SD — مرة واحدة لكل دورة
 
   function arm() {
     clearTimeout(guard);
@@ -117,6 +119,24 @@
     clearTimeout(guard);
     if (hls) { try { hls.destroy(); } catch (e) {} hls = null; }
     if (tier === 'hd') { startWith(SOURCES[key], 'sd'); return; } // انزل درجة قبل الاستسلام
+    // SD (Globecast) وقع وHD ما اتجربش أصلاً (سيرفرنا اتأخّر عن ٦ث أو الشبكة
+    // رفرفت لحظة الفتح) — حادثة 2026-10-11: Globecast رجّع 404 للقناتين بينما
+    // HD سليم؛ من غير المحاولة دي بطء عابر في سيرفرنا = واجهة خطأ رغم وجود
+    // مصدر شغّال. محاولة واحدة أطول (١٢ث) وبعدها الاستسلام فعلاً.
+    if (!hdSeen && !hdRetried) {
+      hdRetried = true;
+      var myGen = gen;
+      resolveHd(12000).then(function (hd) {
+        if (myGen !== gen || ready) return;
+        if (hd) { hdSeen = true; startWith(hd, 'hd'); }
+        else giveUp(reason);
+      });
+      return;
+    }
+    giveUp(reason);
+  }
+
+  function giveUp(reason) {
     msg.textContent = 'تعذّر تشغيل البث الآن.';
     box.classList.add('on');
     tellApp('error', String(reason));
@@ -260,11 +280,11 @@
     } catch (e) { return false; }
   }
 
-  function resolveHd() {
+  function resolveHd(timeoutMs) {
     return new Promise(function (resolve) {
       var done = false;
       var settle = function (val) { if (!done) { done = true; resolve(val); } };
-      setTimeout(function () { settle(null); }, 6000);
+      setTimeout(function () { settle(null); }, timeoutMs || 6000);
       fetch(HD_API + encodeURIComponent(key), { cache: 'no-store' })
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (j) { settle(j && isHdUrl(j.url) ? j.url : null); })
@@ -276,12 +296,14 @@
     gen += 1;
     var myGen = gen;
     ready = false;
+    hdSeen = false;
+    hdRetried = false;
     box.classList.remove('on');
     arm(); // يغطي فترة جلب الرابط كمان — مفيش لحظة بلا حارس
     resolveHd().then(function (hd) {
       // نتيجة محاولة قديمة (ضغطات retry متتالية) ماتشغّلش فوق الأحدث
       if (myGen !== gen || ready) return;
-      if (hd) startWith(hd, 'hd');
+      if (hd) { hdSeen = true; startWith(hd, 'hd'); }
       else startWith(SOURCES[key], 'sd');
     });
   }
