@@ -83,6 +83,7 @@
   var triedNoCookie = false;
   var ready = false;
   var guard = null;
+  var generation = 0;
 
   function arm() {
     clearTimeout(guard);
@@ -94,6 +95,9 @@
   // ما يحرقش لقطة nocookie المحجوزة لأخطاء صلاحيات الـembed.
   function showError(reason) {
     clearTimeout(guard);
+    ready = false;
+    generation += 1;
+    if (player) { try { player.destroy(); } catch (x) {} player = null; }
     msg.textContent = 'تعذّر تشغيل البث داخل التطبيق.';
     box.classList.add('on');
     tellApp('error', String(reason));
@@ -112,6 +116,7 @@
   }
 
   function build() {
+    var myGeneration = ++generation;
     // destroy() قبل شيل العنصر: من غيره كائن YT.Player القديم ومستمع رسائله
     // بيفضلوا عايشين مع كل إعادة بناء — وحارس التجمّد خلّى إعادة البناء
     // حدث عادي مش استثناء، فالتسريب بيتراكم.
@@ -138,12 +143,13 @@
       },
       events: {
         onReady: function (e) {
+          if (myGeneration !== generation) return;
           // تشغيل تلقائي بصوت. لو المنصة رفضت (سياسة الأوتوبلاي) نكتم ونعيد
           // — فيدخل البث لوحده وزر الصوت يبان بدل ما تفضل الشاشة واقفة.
           try {
             e.target.playVideo();
             setTimeout(function () {
-              if (!ready) {
+              if (myGeneration === generation && !ready) {
                 try {
                   e.target.mute();
                   e.target.playVideo();
@@ -154,6 +160,7 @@
           } catch (x) {}
         },
         onStateChange: function (e) {
+          if (myGeneration !== generation) return;
           // BUFFERING أو PLAYING = المشغّل وصل للفيديو فعلاً
           if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.BUFFERING) {
             if (!ready) {
@@ -164,7 +171,7 @@
             }
           }
         },
-        onError: function (e) { fail('yt_' + e.data); }
+        onError: function (e) { if (myGeneration === generation) fail('yt_' + e.data); }
       }
     });
   }
@@ -210,7 +217,7 @@
 
   setInterval(function () {
     if (!ready || !player) return;
-    if (stallRebuilds && Date.now() - lastStall > 60000) stallRebuilds = 0;
+
     if (document.hidden) { stalls = 0; lastTime = -1; return; }
     var t, buffering = false;
     try {
@@ -238,6 +245,7 @@
       if (stalls >= (buffering ? 4 : 2)) { stalls = 0; stalled(); return; }
     } else {
       stalls = 0;
+      if (!buffering && lastTime >= 0 && stallRebuilds && Date.now() - lastStall > 60000) stallRebuilds = 0;
     }
     lastTime = t;
   }, 10000);
